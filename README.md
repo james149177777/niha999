@@ -209,8 +209,11 @@ cp .env.example .env
 python agent.py
 ```
 
-Windows 用户直接双击 **`启动Web.bat`（推荐）**。
-Windows 用户直接双击 **`启动.bat`**。
+1、Windows 用户直接双击 **`启动Web.bat`（Web访问，推荐）**。
+
+      打开浏览器访问 [http://localhost:8866](http://localhost:8866)
+
+2、Windows 用户直接双击 **`启动.bat`（命令行访问）**。
 
 ### 模型选择
 
