@@ -341,7 +341,7 @@ https://39.170.44.216:8088
 **捐赠二维码（微信）**
 
 <p align="left">
-    <img src="img/1.png" alt="微信赞赏码" width="20%"/
+    <img src="img/1.png" alt="微信赞赏码" width="50%"/>
 </p>
 
 ❤️ 随心捐赠、无关金额，万分感谢每一位支持者！
