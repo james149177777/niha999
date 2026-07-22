@@ -5,6 +5,11 @@
 __pycache__/
 *.pyc
 *.pyo
+*.log
+web_server*.log
+web_server*.err.log
+web_server*.out.log
+.vercel/
 
 # 开发备份
 backup/
@@ -12,3 +17,4 @@ backup/
 # 系统文件
 .DS_Store
 Thumbs.db
+.vercel

@@ -23,6 +23,13 @@ logging.basicConfig(
     encoding='utf-8'
 )
 logger = logging.getLogger(__name__)
+SITE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'site.html')
+
+def load_site_page():
+    if os.path.exists(SITE_FILE):
+        with open(SITE_FILE, 'r', encoding='utf-8') as f:
+            return f.read()
+    return HTML_PAGE
 
 # 导入 agent 逻辑
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -962,7 +969,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self._send_cors_headers()
             self.end_headers()
-            self.wfile.write(HTML_PAGE.encode('utf-8'))
+            self.wfile.write(load_site_page().encode('utf-8'))
 
         elif path == '/api/status':
             self.send_response(200)
@@ -1064,11 +1071,16 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
             logger.info(f"[CHAT] Stream complete, tokens={token_count}")
 
+        except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+            logger.info("[CHAT] Client disconnected")
         except Exception as e:
             logger.error(f"[CHAT] Error during stream: {e}")
             error_msg = json.dumps({"error": str(e)}, ensure_ascii=False)
-            self.wfile.write(f"data: {error_msg}\n\n".encode('utf-8'))
-            self.wfile.flush()
+            try:
+                self.wfile.write(f"data: {error_msg}\n\n".encode('utf-8'))
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionAbortedError, ConnectionResetError):
+                logger.info("[CHAT] Client disconnected before error delivery")
 
     def _handle_like(self, data):
         """处理点赞/取消点赞请求，返回最新总数。"""

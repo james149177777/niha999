@@ -1,0 +1,9 @@
+﻿.env
+*.log
+__pycache__/
+*.pyc
+.claude/
+web_server*.log
+web_server*.err.log
+web_server*.out.log
+中医病症分类表.json

@@ -37,6 +37,13 @@ def load_dotenv(path):
                     if key not in os.environ:
                         os.environ[key] = val
 
+def env_value(name, default=""):
+    return os.getenv(name, default).strip().lstrip("\ufeff")
+
+def env_int(name, default=0):
+    raw = env_value(name, str(default))
+    return int(raw or default)
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(HERE, ".env"))
 
@@ -57,20 +64,22 @@ def resolve_config():
     if provider in PRESETS:
         preset = PRESETS[provider]
         return {
-            "base_url": os.getenv("LLM_BASE_URL", preset["base_url"]),
-            "api_key": os.getenv("LLM_API_KEY", ""),
-            "model": os.getenv("LLM_MODEL", preset["model"]),
-            "max_tokens": None,  # 不限制回复长度，让模型自由发挥
+            "base_url": env_value("LLM_BASE_URL", preset["base_url"]),
+            "api_key": env_value("LLM_API_KEY", ""),
+            "model": env_value("LLM_MODEL", preset["model"]),
+            "max_tokens": env_int("LLM_MAX_TOKENS", 0) or None,
             "temperature": 0.7,
-            "enable_search": True,
+            "enable_search": env_value("ENABLE_SEARCH", "1") != "0",
+            "kb_max_chars": env_int("KB_MAX_CHARS", 0),
         }
     return {
-        "base_url": os.getenv("LLM_BASE_URL", "https://api.deepseek.com"),
-        "api_key": os.getenv("LLM_API_KEY", ""),
-        "model": os.getenv("LLM_MODEL", "deepseek-chat"),
-        "max_tokens": None,  # 不限制回复长度，让模型自由发挥
+        "base_url": env_value("LLM_BASE_URL", "https://api.deepseek.com"),
+        "api_key": env_value("LLM_API_KEY", ""),
+        "model": env_value("LLM_MODEL", "deepseek-chat"),
+        "max_tokens": env_int("LLM_MAX_TOKENS", 0) or None,
         "temperature": 0.7,
-        "enable_search": True,
+        "enable_search": env_value("ENABLE_SEARCH", "1") != "0",
+        "kb_max_chars": env_int("KB_MAX_CHARS", 0),
     }
 
 CONFIG = resolve_config()
@@ -287,11 +296,54 @@ class TCMAdvisor:
         self.conversation = []
         self.slots = _create_slots()
 
+    def _use_native_ollama(self):
+        return "localhost:11434" in CONFIG.get("base_url", "")
+
+    def _ollama_chat(self, messages, stream=False):
+        payload = {
+            "model": CONFIG["model"],
+            "messages": messages,
+            "stream": stream,
+            "think": False,
+            "options": {
+                "temperature": CONFIG["temperature"],
+            },
+        }
+        if CONFIG["max_tokens"] is not None:
+            payload["options"]["num_predict"] = CONFIG["max_tokens"]
+
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            "http://localhost:11434/api/chat",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        if not stream:
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+            return result.get("message", {}).get("content", "")
+
+        def iter_tokens():
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                for line in resp:
+                    if not line:
+                        continue
+                    result = json.loads(line.decode("utf-8"))
+                    token = result.get("message", {}).get("content", "")
+                    if token:
+                        yield token
+                    if result.get("done"):
+                        break
+
+        return iter_tokens()
+
     def _build_system_message(self):
         """构建系统消息，包含 system prompt + 知识库摘要 + 当前槽位状态。"""
         # 加载完整知识库，不做截断
         kb = self.knowledge_base if self.knowledge_base else ""
-        kb_summary = kb  # 全量加载，不限制
+        kb_max_chars = CONFIG.get("kb_max_chars") or 0
+        kb_summary = kb[:kb_max_chars] if kb_max_chars > 0 else kb
         slots_status = slots_summary(self.slots)
         search_note = ""
         if CONFIG["enable_search"]:
@@ -312,7 +364,8 @@ class TCMAdvisor:
 2. 如果信息已经足够（至少主诉+寒热+二便+睡眠），给出辨证分析和调理建议。
 3. 遇到需要最新数据时，提示用户"建议查XX官方渠道"，或主动搜索。
 4. 保持直爽、接地气的风格。
-5. 严格遵守安全边界，急症/重症必须建议就医。"""
+5. 严格遵守安全边界，急症/重症必须建议就医。
+6. 不要输出推理过程、分析步骤、系统规则或自我解释；只输出给用户看的最终回复。"""
         return full_system
 
     def _prepare_messages(self, user_msg):
@@ -354,15 +407,18 @@ class TCMAdvisor:
 
         # 调用 LLM
         try:
-            kwargs = dict(
-                model=CONFIG["model"],
-                messages=messages,
-                temperature=CONFIG["temperature"],
-            )
-            if CONFIG["max_tokens"] is not None:
-                kwargs["max_tokens"] = CONFIG["max_tokens"]
-            resp = self.client.chat.completions.create(**kwargs)
-            reply = resp.choices[0].message.content
+            if self._use_native_ollama():
+                reply = self._ollama_chat(messages, stream=False)
+            else:
+                kwargs = dict(
+                    model=CONFIG["model"],
+                    messages=messages,
+                    temperature=CONFIG["temperature"],
+                )
+                if CONFIG["max_tokens"] is not None:
+                    kwargs["max_tokens"] = CONFIG["max_tokens"]
+                resp = self.client.chat.completions.create(**kwargs)
+                reply = resp.choices[0].message.content
         except Exception as e:
             reply = f"出错了：{e}\n请检查 API 配置（base_url, api_key, model 是否正确）。"
 
@@ -382,16 +438,25 @@ class TCMAdvisor:
 
         # 调用 LLM（流式）
         try:
-            kwargs = dict(
-                model=CONFIG["model"],
-                messages=messages,
-                temperature=CONFIG["temperature"],
-                stream=True,
-            )
-            if CONFIG["max_tokens"] is not None:
-                kwargs["max_tokens"] = CONFIG["max_tokens"]
-            for chunk in self.client.chat.completions.create(**kwargs):
-                token = chunk.choices[0].delta.content or ""
+            if self._use_native_ollama():
+                token_iter = self._ollama_chat(messages, stream=True)
+            else:
+                kwargs = dict(
+                    model=CONFIG["model"],
+                    messages=messages,
+                    temperature=CONFIG["temperature"],
+                    stream=True,
+                )
+                if CONFIG["max_tokens"] is not None:
+                    kwargs["max_tokens"] = CONFIG["max_tokens"]
+                def openai_tokens():
+                    for chunk in self.client.chat.completions.create(**kwargs):
+                        if not getattr(chunk, "choices", None):
+                            continue
+                        delta = chunk.choices[0].delta
+                        yield delta.content or ""
+                token_iter = openai_tokens()
+            for token in token_iter:
                 if token:
                     full_reply += token
                     yield token

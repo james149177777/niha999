@@ -1,0 +1,11 @@
+[project]
+name = "nihaisha-ai-agent"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "flask>=3.0.0",
+  "openai>=2.0.0",
+]
+
+[tool.vercel]
+entrypoint = "api.index:app"
